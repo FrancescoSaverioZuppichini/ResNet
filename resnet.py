@@ -73,7 +73,7 @@ class BasicBlock(nn.Module):
 
         self.in_planes, self.out_planes, self.conv_block, self.stride = in_planes, out_planes, conv_block, stride
 
-        self.block = self.blocks(in_planes, out_planes, conv_block, stride=stride, *args, **kwargs)
+        self.convs = self.get_convs(in_planes, out_planes, conv_block, stride=stride, *args, **kwargs)
 
         self.shortcut = self.get_shortcut() if self.in_planes != self.expanded else None
 
@@ -88,7 +88,7 @@ class BasicBlock(nn.Module):
             nn.BatchNorm2d(self.out_planes),
         )
 
-    def blocks(self, in_planes, out_planes, conv_block, stride, *args, **kwargs):
+    def get_convs(self, in_planes, out_planes, conv_block, stride, *args, **kwargs):
         return nn.Sequential(
             conv_block(self.in_planes, out_planes, stride=stride, *args, **kwargs),
             conv_block(out_planes, out_planes, *args, **kwargs),
@@ -100,7 +100,7 @@ class BasicBlock(nn.Module):
 
         if self.shortcut is not None: residual = self.shortcut(residual)
 
-        out = self.block(x)
+        out = self.convs(x)
 
         out = out + residual
 
@@ -109,7 +109,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(BasicBlock):
     expansion = 4
 
-    def blocks(self, in_planes, out_planes, stride, conv_block=conv_block3x3, *args, **kwargs):
+    def get_convs(self, in_planes, out_planes, stride, conv_block=conv_block3x3, *args, **kwargs):
         return nn.Sequential(
             conv_block3x3(in_planes, out_planes, kernel_size=1),
             conv_block3x3(out_planes, out_planes, kernel_size=3, stride=stride),
@@ -189,7 +189,7 @@ class ResNetEncoder(nn.Module):
     """
     def __init__(self, in_channel, depths, blocks=BasicBlock, blocks_sizes=None, conv_block=conv_block3x3, *args, **kwargs):
         super().__init__()
-        self.blocks = blocks
+        self.in_channel, self.depths, self.blocks = in_channel, depths, blocks
 
         self.blocks_sizes = blocks_sizes if blocks_sizes is not None else [(64, 64), (64, 128), (128, 256), (256, 512)]
 
@@ -249,6 +249,7 @@ class ResNet(nn.Module):
     """
     def __init__(self, depths, in_channel=3, blocks=BasicBlock, n_classes=1000, encoder=ResNetEncoder, decoder=ResnetDecoder, *args, **kwargs):
         super().__init__()
+        self.depths, self.in_channel, self.n_classes = depths, in_channel, n_classes
         self.encoder = encoder(in_channel,depths, blocks, *args, **kwargs)
         self.decoder = decoder(self.encoder.blocks_sizes[-1][1] * self.encoder.blocks[-1].expansion, n_classes)
 
