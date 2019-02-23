@@ -37,37 +37,43 @@ class SEModule(nn.Module):
         return x * out
 
 
-def conv_block(in_planes, out_planes, conv_layer=nn.Conv2d, kernel_size=3, padding=None, preactivated=False, stride=1,
-               **kwargs):
+def conv_block3x3(in_planes, out_planes, conv_layer=nn.Conv2d,
+                  kernel_size=3, padding=None, preactivate=False, stride=1, activation='relu'):
+
+    activation_funcs= nn.ModuleDict({ 'relu' : nn.ReLU(),
+                                      'leaky_relu': nn.LeakyReLU(),
+                                      'selu' : nn.SELU()})
+
     padding = kernel_size // 2 if not padding else padding
 
-    if preactivated:
+    if preactivate:
         conv_block = nn.Sequential(
             nn.BatchNorm2d(in_planes),
-            nn.LeakyReLU(negative_slope=0.1),
-            conv_layer(in_planes, out_planes, kernel_size=kernel_size, padding=padding, bias=False, stride=stride,
-                       **kwargs)
+            activation_funcs[activation],
+            conv_layer(in_planes, out_planes, kernel_size=kernel_size, padding=padding, bias=False, stride=stride)
         )
     else:
         conv_block = nn.Sequential(
-            conv_layer(in_planes, out_planes, kernel_size=kernel_size, padding=padding, bias=False, stride=stride,
-                       **kwargs),
+            conv_layer(in_planes, out_planes, kernel_size=kernel_size, padding=padding, bias=False, stride=stride),
             nn.BatchNorm2d(out_planes),
-            nn.LeakyReLU(),
+            activation_funcs[activation],
         )
 
     return conv_block
 
 
 class BasicBlock(nn.Module):
+    """
+    Basic block of ResNet, is is composed by two 3x3 conv - relu and batchnorm
+    """
     expansion = 1
 
-    def __init__(self, in_planes, out_planes, stride=1, conv_layer=nn.Conv2d, *args, **kwargs):
+    def __init__(self, in_planes, out_planes, stride=1, conv_block=conv_block3x3, *args, **kwargs):
         super().__init__()
 
-        self.in_planes, self.out_planes, self.conv_layer, self.stride = in_planes, out_planes, conv_layer, stride
+        self.in_planes, self.out_planes, self.conv_block, self.stride = in_planes, out_planes, conv_block, stride
 
-        self.block = self.blocks(in_planes, out_planes, conv_layer, stride=stride, *args, **kwargs)
+        self.block = self.blocks(in_planes, out_planes, conv_block, stride=stride, *args, **kwargs)
 
         self.shortcut = self.get_shortcut() if self.in_planes != self.expanded else None
 
@@ -77,23 +83,22 @@ class BasicBlock(nn.Module):
 
     def get_shortcut(self):
         return nn.Sequential(
-            self.conv_layer(self.in_planes, self.out_planes, kernel_size=1,
+            nn.Conv2d(self.in_planes, self.out_planes, kernel_size=1,
                        stride=self.stride, bias=False),
             nn.BatchNorm2d(self.out_planes),
         )
 
-    def blocks(self, in_planes, out_planes, conv_layer, stride, *args, **kwargs):
+    def blocks(self, in_planes, out_planes, conv_block, stride, *args, **kwargs):
         return nn.Sequential(
-            conv_block(self.in_planes, out_planes, conv_layer, stride=stride, *args, **kwargs),
-            conv_block(out_planes, out_planes, conv_layer, *args, **kwargs),
+            conv_block(self.in_planes, out_planes, stride=stride, *args, **kwargs),
+            conv_block(out_planes, out_planes, *args, **kwargs),
         )
 
 
     def forward(self, x):
         residual = x
 
-        if self.shortcut is not None:
-            residual = self.shortcut(residual)
+        if self.shortcut is not None: residual = self.shortcut(residual)
 
         out = self.block(x)
 
@@ -104,17 +109,17 @@ class BasicBlock(nn.Module):
 class Bottleneck(BasicBlock):
     expansion = 4
 
-    def blocks(self, in_planes, out_planes, conv_layer, stride, *args, **kwargs):
+    def blocks(self, in_planes, out_planes, stride, conv_block=conv_block3x3, *args, **kwargs):
         return nn.Sequential(
-            conv_block(in_planes, out_planes, conv_layer, kernel_size=1),
-            conv_block(out_planes, out_planes, conv_layer, kernel_size=3, stride=stride),
-            conv_block(out_planes, self.expanded, conv_layer, kernel_size=1),
+            conv_block3x3(in_planes, out_planes, kernel_size=1),
+            conv_block3x3(out_planes, out_planes, kernel_size=3, stride=stride),
+            conv_block3x3(out_planes, self.expanded, kernel_size=1),
         )
 
 
 class BasicBlockSE(BasicBlock):
-    def __init__(self, in_planes, out_planes, conv_layer=nn.Conv2d, *args, **kwargs):
-        super().__init__(in_planes, out_planes, conv_layer=conv_layer, *args, **kwargs)
+    def __init__(self, in_planes, out_planes,  *args, **kwargs):
+        super().__init__(in_planes, out_planes,  *args, **kwargs)
         self.se = SEModule(out_planes)
 
     def forward(self, x):
@@ -161,15 +166,13 @@ class ResNetLayer(nn.Module):
     def __init__(self, in_planes, out_planes, depth, block=BasicBlock, *args, **kwargs):
         super().__init__()
         # if inputs == outputs then stride = 1, e.g 64==64 (first block)
-        stride = 1 if in_planes == out_planes else 2
+        should_downsample = in_planes != out_planes
+        stride = 2 if should_downsample else 1
 
-        expansion = block.expansion
-
-        in_planes = in_planes * expansion
         # create the layer by directly instantiate the first block with the correct stride and then
         # if needed create all the others blocks
         self.layer = nn.Sequential(
-            block(in_planes, out_planes, stride=stride, *args, **kwargs),
+            block(in_planes * block.expansion, out_planes, stride=stride, *args, **kwargs),
             *[block(out_planes * block.expansion, out_planes, *args, **kwargs) for _ in range(max(0, depth - 1))],
         )
 
@@ -180,28 +183,28 @@ class ResNetLayer(nn.Module):
 
 
 class ResNetEncoder(nn.Module):
-    def __init__(self, in_channel, depths, blocks=BasicBlock, blocks_sizes=None, conv_layer=nn.Conv2d, *args, **kwargs):
+    """
+    This class represents the head of ResNet. It reduce the dimension of the input image by apply the
+    .gate layer first and feed the output to one layer after the other.
+    """
+    def __init__(self, in_channel, depths, blocks=BasicBlock, blocks_sizes=None, conv_block=conv_block3x3, *args, **kwargs):
         super().__init__()
+        self.blocks = blocks
+
+        self.blocks_sizes = blocks_sizes if blocks_sizes is not None else [(64, 64), (64, 128), (128, 256), (256, 512)]
 
         self.gate = nn.Sequential(
-            conv_layer(in_channel, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(in_channel, self.blocks_sizes[0][0], kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(self.blocks_sizes[0][0]),
             nn.LeakyReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         )
-
-
-        self.blocks_sizes = [(64, 64), (64, 128), (128, 256), (256, 512)]
-
-        if type(blocks) is not list: blocks = [blocks] * len(self.blocks_sizes)
-
-        self.blocks = blocks
-
-        if blocks_sizes is None: blocks_sizes = self.blocks_sizes
-
+        # if the user passed a single instance of block, use it for each layer
+        if type(blocks) is not list: self.blocks = [blocks] * len(self.blocks_sizes)
+        # stack a number of layers together equal to the len of depth
         self.layers = nn.ModuleList([
-            ResNetLayer(in_c, out_c, depth=depths[i], block=blocks[i], conv_layer=conv_layer, *args, **kwargs)
-            for i, (in_c, out_c) in enumerate(blocks_sizes)
+            ResNetLayer(in_c, out_c, depth=depths[i], block=self.blocks[i],  *args, **kwargs)
+            for i, (in_c, out_c) in enumerate(self.blocks_sizes)
         ])
 
         self.initialise(self.modules())
@@ -225,6 +228,10 @@ class ResNetEncoder(nn.Module):
         return x
 
 class ResnetDecoder(nn.Module):
+    """
+    This class represents the tail of ResNet. It performs a global pooling and maps the output to the
+    correct class by using a fully connected layer.
+    """
     def __init__(self, in_features, n_classes):
         super().__init__()
         self.avg = nn.AdaptiveAvgPool2d((1, 1))
@@ -240,11 +247,10 @@ class ResNet(nn.Module):
     """
     ResNet https://arxiv.org/pdf/1512.03385.pdf
     """
-    def __init__(self, in_channel, depths, blocks=BasicBlock, conv_layer=nn.Conv2d, n_classes=1000, encoder=ResNetEncoder, decoder=ResnetDecoder, *args, **kwargs):
+    def __init__(self, depths, in_channel=3, blocks=BasicBlock, n_classes=1000, encoder=ResNetEncoder, decoder=ResnetDecoder, *args, **kwargs):
         super().__init__()
-        self.encoder = encoder(in_channel,depths, blocks, conv_layer=conv_layer, *args, **kwargs)
+        self.encoder = encoder(in_channel,depths, blocks, *args, **kwargs)
         self.decoder = decoder(self.encoder.blocks_sizes[-1][1] * self.encoder.blocks[-1].expansion, n_classes)
-
 
     def forward(self, x):
         return self.decoder(self.encoder(x))
@@ -252,38 +258,44 @@ class ResNet(nn.Module):
 
 # resnet-tiny = [1, 2, 3, 2]
 
-def resnet18(in_channel, block=BasicBlock, resnet=ResNet, pretrained=False, *args, **kwargs):
-    model = resnet(in_channel, [2, 2, 2, 2], block, *args, **kwargs)
+def resnet18(in_channel=3, blocks=BasicBlock, resnet=ResNet, pretrained=False, *args, **kwargs):
+    model = resnet([2, 2, 2, 2], in_channel, blocks, *args, **kwargs)
 
     if pretrained:
-        print('loading pretrained weights...')
+        print('loading trained weights...')
         restore(models.resnet18(True), model)
 
     return model
 
-def resnet34(in_channel, block=BasicBlock, pretrained=False, resnet=ResNet, **kwargs):
-    model = resnet(in_channel, [3, 4, 6, 3], block, **kwargs)
+def resnet34(in_channel=3, blocks=BasicBlock, pretrained=False, resnet=ResNet, **kwargs):
+    model = resnet([3, 4, 6, 3], in_channel, blocks, **kwargs)
 
     if pretrained:
-        print('loading pretrained weights...')
+        print('loading trained weights...')
         restore(models.resnet34(True), model)
 
     return model
 
-def resnet50(in_channel, block=Bottleneck, **kwargs):
-    model = ResNet(in_channel, [3, 4, 6, 3], block, **kwargs)
+def resnet50(in_channel=3, blocks=Bottleneck,  pretrained=False, resnet=ResNet, **kwargs):
+    model = resnet([3, 4, 6, 3], in_channel, blocks, **kwargs)
+    if pretrained:
+        print('loading trained weights...')
+        restore(models.resnet50(True), model)
 
     return model
 
-def resnet101(in_channel, block=Bottleneck, **kwargs):
-    model = ResNet(in_channel, [3, 4, 23, 3], block, **kwargs)
-
+def resnet101(in_channel=3, blocks=Bottleneck, pretrained=False, resnet=ResNet, **kwargs):
+    model = resnet([3, 4, 23, 3], in_channel, blocks, **kwargs)
+    if pretrained:
+        print('loading trained weights...')
+        restore(models.resnet101(True), model)
     return model
 
-def resnet152(in_channel, block=Bottleneck, pretrained=False, **kwargs):
-
-    model = ResNet(in_channel, [3, 8, 36, 3], block, **kwargs)
-
+def resnet152(in_channel=3, blocks=Bottleneck, pretrained=False, resnet=ResNet, **kwargs):
+    model = resnet([3, 8, 36, 3], in_channel, blocks, **kwargs)
+    if pretrained:
+        print('loading trained weights...')
+        restore(models.resnet152(True), model)
     return model
 
 def restore(source, target):
@@ -302,8 +314,3 @@ def restore(source, target):
 
         for p_t_bn, bn in zip(p_t_bns, bns):
             bn.load_state_dict(p_t_bn.state_dict())
-
-
-# resnet = ResNet(1, [2,2,2,2])
-#
-# print(resnet)
