@@ -1,6 +1,6 @@
 
 # ResNet
-## Clean and scalable implementation of ResNet
+## Clean and scalable implementation of ResNet in Pytorch
 ![alt](https://raw.githubusercontent.com/FrancescoSaverioZuppichini/ResNet/master/imagess/resnet34.png?token=APK83CAQ4DslctlEF0lFskydLIIX9MTbks5cepXFwA%3D%3D)
 
 This is a ResNet implementation focus on scalable and customization. In addition to the classic ResNet model, we alsos provide Squeeze and Excitation blocks.
