@@ -3,40 +3,6 @@ import torch.nn as nn
 
 from torchvision import models
 
-class Conv2dSame(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, bias=True, stride=1, *args, **kwargs):
-        super().__init__()
-        padding = ((in_channels - 1) * (stride - 1) + 1 * (kernel_size - 1)) // 2
-
-        self.net = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels, out_channels, kernel_size, bias=bias, padding=padding)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class SEModule(nn.Module):
-    def __init__(self, n_features, ratio=16, *args, **kwargs):
-        super().__init__()
-
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-
-        self.se = nn.Sequential(
-            nn.Linear(n_features, n_features // ratio),
-            nn.ReLU(inplace=True),
-            nn.Linear(n_features // ratio, n_features),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        out = self.avg_pool(x).view(b, c)  # flat
-        out = self.se(out).view(b, c, 1, 1)
-
-        return x * out
-
-
 def conv_block3x3(in_planes, out_planes, conv_layer=nn.Conv2d,
                   kernel_size=3, padding=None, preactivate=False, stride=1, activation='relu'):
 
@@ -61,10 +27,33 @@ def conv_block3x3(in_planes, out_planes, conv_layer=nn.Conv2d,
 
     return conv_block
 
+class SEModule(nn.Module):
+    """
+    Squeeze and Excitation module https://arxiv.org/abs/1709.01507
+    """
+    def __init__(self, n_features, ratio=16, *args, **kwargs):
+        super().__init__()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        self.se = nn.Sequential(
+            nn.Linear(n_features, n_features // ratio),
+            nn.ReLU(inplace=True),
+            nn.Linear(n_features // ratio, n_features),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        out = self.avg_pool(x).view(b, c)  # flat
+        out = self.se(out).view(b, c, 1, 1)
+
+        return x * out
 
 class BasicBlock(nn.Module):
     """
-    Basic block of ResNet, is is composed by two 3x3 conv - relu and batchnorm
+    Basic block of ResNet, is is composed by two 3x3 conv - relu and batchnorm.
+    It automatically perform residual addition
     """
     expansion = 1
 
@@ -136,8 +125,6 @@ class BasicBlockSE(BasicBlock):
 
 
 class BottleneckSE(Bottleneck):
-    expansion = 4
-
     def __init__(self, in_planes, out_planes, *args, **kwargs):
         super().__init__(in_planes, out_planes, *args, **kwargs)
         self.se = SEModule(out_planes * self.expansion)
