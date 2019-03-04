@@ -117,7 +117,7 @@ class BasicBlockSE(BasicBlock):
         if self.shortcut is not None:
             residual = self.shortcut(residual)
 
-        out = self.block(x)
+        out = self.convs(x)
         out = self.se(out)
         out += residual
 
@@ -135,7 +135,7 @@ class BottleneckSE(Bottleneck):
         if self.shortcut is not None:
             residual = self.shortcut(residual)
 
-        out = self.block(x)
+        out = self.convs(x)
         out = self.se(out)
 
         out.add_(residual)
@@ -188,6 +188,7 @@ class ResNetEncoder(nn.Module):
         )
         # if the user passed a single instance of block, use it for each layer
         if type(blocks) is not list: self.blocks = [blocks] * len(self.blocks_sizes)
+        print(self.blocks_sizes)
         # stack a number of layers together equal to the len of depth
         self.layers = nn.ModuleList([
             ResNetLayer(in_c, out_c, depth=depths[i], block=self.blocks[i],  *args, **kwargs)
